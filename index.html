@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>MetaMask Social — Assignment Prototype</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  body{font-family:system-ui,Segoe UI,Roboto,Arial;margin:0;padding:18px;background:#f7fafc;color:#0f172a}
+  .container{max-width:980px;margin:0 auto}
+  header{display:flex;justify-content:space-between;align-items:center}
+  nav a{margin-right:12px;text-decoration:none;color:#1f2937}
+  .card{background:white;border-radius:8px;padding:14px;margin-top:14px;box-shadow:0 1px 3px rgba(0,0,0,0.06)}
+  button{padding:8px 12px;border-radius:6px;border:1px solid #e2e8f0;background:#fff;cursor:pointer}
+  .btn-primary{background:#2563eb;color:#fff;border:none}
+  .muted{color:#6b7280;font-size:0.95rem}
+  .row{display:flex;justify-content:space-between;align-items:center}
+  .user-row{display:flex;flex-direction:column;border-bottom:1px dashed #eef2f7;padding:10px 0}
+  .small{font-size:0.9rem;padding:6px 8px}
+  input, textarea{padding:8px;border-radius:6px;border:1px solid #e6eef7;width:100%}
+  .tag-you{background:#e0f2fe;color:#0369a1;padding:4px 8px;border-radius:999px;font-size:0.85rem}
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h2>MetaMask Social — Assignment Demo</h2>
+    <div>
+      <nav>
+        <a href="#/connect">Connect</a>
+        <a href="#/home">Home</a>
+        <a href="#/requests">Requests</a>
+        <a href="#/profile">Profile</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main"></main>
+  <footer class="muted" style="margin-top:18px">Static prototype — stores data in localStorage (users, friend_requests, friends).</footer>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/ethers/dist/ethers.min.js"></script>
+<script>
+const SUPABASE_URL = "REPLACE_ME_SUPABASE_URL";
+const SUPABASE_ANON_KEY = "REPLACE_ME_SUPABASE_ANON_KEY";
+<script>
+const SUPABASE_URL = "https://slquhkcdcimhukexchri.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNscXVoa2NkY2ltaHVrZXhjaHJpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjUwMjU3NjAsImV4cCI6MjA4MDYwMTc2MH0.ZWEMcivn193zAOEIBTNA6q_qsxZGAPmP5LeLav4SEvI";
+</script>
+
+
+/*
+  Assignment-correct prototype:
+  - Pages: /connect, /home, /requests, /profile (hash routing)
+  - Data in localStorage keys: asg_users, asg_requests, asg_friends
+  - User object: { wallet, username?, created_at }
+  - Request object: { id, sender, receiver, status:'pending'|'accepted'|'rejected', created_at }
+  - Friends stored as array of pairs "A|B" (we store both directions on accept)
+*/
+
+const STORAGE_KEYS = { USERS:'asg_users', REQ:'asg_requests', FRIENDS:'asg_friends' };
+const main = document.getElementById('main');
+
+function storageGet(k){ try { return JSON.parse(localStorage.getItem(k) || 'null') || []; } catch(e){ return []; } }
+function storageSet(k,v){ localStorage.setItem(k, JSON.stringify(v)); }
+
+function uid(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,6); }
+function short(a){ return a ? a.slice(0,6)+'...'+a.slice(-4) : ''; }
+
+let current = { wallet: null, username: null };
+
+// init storage if empty
+if(!localStorage.getItem(STORAGE_KEYS.USERS)) storageSet(STORAGE_KEYS.USERS, []);
+if(!localStorage.getItem(STORAGE_KEYS.REQ)) storageSet(STORAGE_KEYS.REQ, []);
+if(!localStorage.getItem(STORAGE_KEYS.FRIENDS)) storageSet(STORAGE_KEYS.FRIENDS, []);
+
+// ROUTER
+function route(){
+  const hash = location.hash.replace('#','') || '/connect';
+  if(hash.startsWith('/connect')) renderConnect();
+  else if(hash.startsWith('/home')) renderHome();
+  else if(hash.startsWith('/requests')) renderRequests();
+  else if(hash.startsWith('/profile')) renderProfile();
+  else renderConnect();
+}
+window.addEventListener('hashchange', route);
+route();
+
+// --- Helpers: DB-like ops on localStorage ---
+function upsertUser(wallet, username){
+  wallet = wallet.toLowerCase();
+  const users = storageGet(STORAGE_KEYS.USERS);
+  const idx = users.findIndex(u=>u.wallet===wallet);
+  if(idx>=0){
+    if(username) users[idx].username = username;
+    storageSet(STORAGE_KEYS.USERS, users);
+    return users[idx];
+  } else {
+    const u = { wallet, username: username||('user-'+short(wallet)), created_at: new Date().toISOString() };
+    users.push(u); storageSet(STORAGE_KEYS.USERS, users);
+    return u;
+  }
+}
+
+function listUsers(){ return storageGet(STORAGE_KEYS.USERS); }
+function listRequests(){ return storageGet(STORAGE_KEYS.REQ); }
+function listFriends(){ return storageGet(STORAGE_KEYS.FRIENDS); }
+
+function sendRequest(sender, receiver){
+  const reqs = listRequests();
+  // prevent duplicates or existing friendship
+  if(sender===receiver) return { error:'Cannot send to yourself' };
+  if(reqs.find(r=> ((r.sender===sender && r.receiver===receiver) || (r.sender===receiver && r.receiver===sender)) && r.status==='pending')) return { error:'Request pending' };
+  const friends = listFriends();
+  if(friends.includes(sender+'|'+receiver)) return { error:'Already friends' };
+  const r = { id: uid(), sender, receiver, status:'pending', created_at:new Date().toISOString() };
+  reqs.push(r); storageSet(STORAGE_KEYS.REQ, reqs);
+  return { ok:true, r };
+}
+
+function cancelRequest(id, by){
+  let reqs = listRequests();
+  const r = reqs.find(x=>x.id===id);
+  if(!r) return { error:'Not found' };
+  if(r.sender !== by && r.receiver !== by) return { error:'Not authorized' };
+  reqs = reqs.filter(x=>x.id!==id); storageSet(STORAGE_KEYS.REQ, reqs);
+  return { ok:true };
+}
+
+function acceptRequest(id, me){
+  const reqs = listRequests();
+  const r = reqs.find(x=>x.id===id);
+  if(!r) return { error:'Not found' };
+  if(r.receiver !== me) return { error:'Only receiver can accept' };
+  // add friends both directions
+  const friends = listFriends();
+  friends.push(r.sender + '|' + r.receiver);
+  friends.push(r.receiver + '|' + r.sender);
+  storageSet(STORAGE_KEYS.FRIENDS, Array.from(new Set(friends)));
+  // update request status -> accepted (or remove)
+  const newReqs = reqs.map(x => x.id===id ? {...x, status:'accepted'} : x);
+  storageSet(STORAGE_KEYS.REQ, newReqs);
+  return { ok:true };
+}
+
+function rejectRequest(id, me){
+  let reqs = listRequests();
+  const r = reqs.find(x=>x.id===id);
+  if(!r) return { error:'Not found' };
+  if(r.receiver !== me) return { error:'Only receiver can reject' };
+  // remove request
+  reqs = reqs.filter(x=>x.id!==id); storageSet(STORAGE_KEYS.REQ, reqs);
+  return { ok:true };
+}
+
+function getUser(wallet){ return listUsers().find(u=>u.wallet===wallet); }
+function areFriends(a,b){ return listFriends().includes(a+'|'+b); }
+
+// --- Render Pages ---
+function renderConnect(){
+  main.innerHTML = `
+    <div class="card">
+      <h3>Connect Wallet</h3>
+      <p class="muted">Click connect to use your MetaMask wallet. On first connect we store your wallet (mock DB).</p>
+      <div style="margin-top:10px" id="connectArea">
+        <div style="display:flex;gap:8px;align-items:center">
+          <button id="connectBtn" class="btn-primary small">Connect MetaMask</button>
+          <span id="connectedBadge" class="muted">Not connected</span>
+        </div>
+        <div style="margin-top:12px">
+          <input id="nick" placeholder="Optional nickname" />
+          <button id="saveNick" class="small">Save nickname (after connect)</button>
+        </div>
+      </div>
+    </div>
+  `;
+  document.getElementById('connectBtn').onclick = connectMetaMaskFromUI;
+  document.getElementById('saveNick').onclick = ()=>{
+    if(!current.wallet) return alert('Connect first');
+    const v = document.getElementById('nick').value.trim();
+    upsertUser(current.wallet, v || undefined);
+    alert('Nickname saved');
+    if(location.hash !== '#/home') location.hash = '#/home';
+  };
+  // show connected state if already present
+  if(current.wallet) document.getElementById('connectedBadge').innerText = 'Connected: '+short(current.wallet);
+}
+
+async function connectMetaMaskFromUI(){
+  if(!window.ethereum) return alert('MetaMask not detected.');
+  try{
+    const accs = await window.ethereum.request({ method:'eth_requestAccounts' });
+    current.wallet = accs[0].toLowerCase();
+    upsertUser(current.wallet); // create minimal user
+    // redirect to home
+    location.hash = '#/home';
+    route();
+  } catch(e){ alert('Connection failed: '+(e.message||e)); }
+}
+
+function renderHome(){
+  const users = listUsers();
+  main.innerHTML = `<div class="card"><h3>Home — Directory</h3>
+    <p class="muted">All registered users. Your wallet is marked <span class="tag-you">You</span>.</p>
+    <div id="usersList" style="margin-top:12px"></div>
+  </div>`;
+  const el = document.getElementById('usersList');
+  if(!users.length) el.innerHTML = `<div class="muted">No users yet — ask someone to connect or use Connect page.</div>`;
+  users.forEach(u=>{
+    const isYou = current.wallet && u.wallet===current.wallet;
+    const div = document.createElement('div'); div.className='user-row';
+    div.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div>
+          <strong>${u.username||short(u.wallet)}</strong>
+          <div class="muted">${short(u.wallet)}${isYou? ' • ' : ''}${isYou? '<span class="tag-you">You</span>':''}</div>
+        </div>
+        <div id="btn-${u.wallet}"></div>
+      </div>`;
+    el.appendChild(div);
+    // buttons
+    const btnContainer = document.getElementById('btn-'+u.wallet);
+    if(!current.wallet){
+      btnContainer.innerHTML = '<span class="muted">Connect to interact</span>';
+    } else if(isYou){
+      btnContainer.innerHTML = '<button class="small" disabled>It\'s you</button>';
+    } else {
+      // check states
+      const pending = listRequests().find(r=> ((r.sender===current.wallet && r.receiver===u.wallet) || (r.sender===u.wallet && r.receiver===current.wallet)) && r.status==='pending');
+      const friends = areFriends(current.wallet, u.wallet);
+      if(friends){
+        btnContainer.innerHTML = '<button class="small" disabled>Friends</button>';
+      } else if(pending){
+        if(pending.sender === current.wallet) btnContainer.innerHTML = `<button class="small" onclick="cancel('${pending.id}')">Cancel Request</button>`;
+        else btnContainer.innerHTML = `<button class="small" onclick="accept('${pending.id}')">Accept</button> <button class="small" onclick="reject('${pending.id}')">Reject</button>`;
+      } else {
+        btnContainer.innerHTML = `<button class="btn-primary small" onclick="send('${u.wallet}')">Send Friend Request</button>`;
+      }
+    }
+  });
+}
+
+function renderRequests(){
+  main.innerHTML = `<div class="card"><h3>Requests</h3>
+    <div style="display:flex;gap:12px;flex-wrap:wrap">
+      <div style="flex:1;min-width:280px">
+        <h4>Incoming</h4><div id="incList"></div>
+      </div>
+      <div style="flex:1;min-width:280px">
+        <h4>Outgoing</h4><div id="outList"></div>
+      </div>
+    </div></div>`;
+  const inc = document.getElementById('incList'), out = document.getElementById('outList');
+  if(!current.wallet){ inc.innerHTML = '<div class="muted">Connect to manage requests</div>'; out.innerHTML=''; return; }
+  const incoming = listRequests().filter(r=>r.receiver===current.wallet && r.status==='pending');
+  const outgoing = listRequests().filter(r=>r.sender===current.wallet && r.status==='pending');
+  if(!incoming.length) inc.innerHTML = '<div class="muted">No incoming requests</div>'; else incoming.forEach(r=>{
+    const u = getUser(r.sender) || {username:short(r.sender)};
+    const d = document.createElement('div'); d.className='card';
+    d.innerHTML = `<div><strong>${u.username}</strong> (${short(r.sender)})</div>
+      <div style="margin-top:8px"><button class="small" onclick="accept('${r.id}')">Accept</button>
+      <button class="small" onclick="reject('${r.id}')">Reject</button></div>`;
+    inc.appendChild(d);
+  });
+  if(!outgoing.length) out.innerHTML = '<div class="muted">No outgoing requests</div>'; else outgoing.forEach(r=>{
+    const u = getUser(r.receiver) || {username:short(r.receiver)};
+    const d = document.createElement('div'); d.className='card';
+    d.innerHTML = `<div>To <strong>${u.username}</strong> (${short(r.receiver)})</div>
+      <div style="margin-top:8px"><button class="small" onclick="cancel('${r.id}')">Cancel</button></div>`;
+    out.appendChild(d);
+  });
+}
+
+function renderProfile(){
+  main.innerHTML = `<div class="card"><h3>Profile</h3><div id="profileArea"></div></div>`;
+  const pa = document.getElementById('profileArea');
+  if(!current.wallet){ pa.innerHTML = '<div class="muted">Connect first to see profile</div>'; return; }
+  const u = getUser(current.wallet) || {};
+  pa.innerHTML = `<div><strong>${u.username || short(current.wallet)}</strong></div>
+    <div class="muted">Wallet: ${current.wallet}</div>
+    <div style="margin-top:12px"><h4>Your friends</h4><div id="friendsList"></div></div>`;
+  const fl = document.getElementById('friendsList'); const friends = listFriends().filter(p=>p.startsWith(current.wallet+'|')).map(s=>s.split('|')[1]);
+  if(!friends.length) fl.innerHTML = '<div class="muted">No friends yet</div>'; else friends.forEach(fw=>{
+    const fu = getUser(fw) || {username: short(fw)};
+    const c = document.createElement('div'); c.className='card';
+    c.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center"><div><strong>${fu.username}</strong><div class="muted">${short(fu.wallet || fw)}</div></div></div>`;
+    fl.appendChild(c);
+  });
+}
+
+// --- Actions exposed to buttons (global for inline onclick) ---
+window.send = function(target){
+  if(!current.wallet) return alert('Connect first');
+  const res = sendRequest(current.wallet, target);
+  if(res.error) return alert(res.error);
+  alert('Request sent');
+  route();
+};
+window.cancel = function(id){
+  if(!current.wallet) return alert('Connect first');
+  const r = cancelRequest(id, current.wallet);
+  if(r.error) return alert(r.error);
+  route();
+};
+window.accept = function(id){
+  if(!current.wallet) return alert('Connect first');
+  const r = acceptRequest(id, current.wallet);
+  if(r.error) return alert(r.error);
+  alert('Request accepted — you are now friends');
+  route();
+};
+window.reject = function(id){
+  if(!current.wallet) return alert('Connect first');
+  const r = rejectRequest(id, current.wallet);
+  if(r.error) return alert(r.error);
+  route();
+};
+
+// --- small helpers: seed / clear for demo ---
+function seedDemo(){
+  const users = listUsers();
+  for(let i=1;i<=4;i++){
+    const fake = '0x' + Math.floor(Math.random()*1e16).toString(16).padEnd(40,'0');
+    users.push({ wallet: fake, username: 'demo'+i, created_at: new Date().toISOString() });
+  }
+  storageSet(STORAGE_KEYS.USERS, users);
+  alert('4 demo users added — go to Home');
+}
+
+// Expose connect from console if needed
+window.seedDemo = seedDemo;
+
+// --- If someone connects via MetaMask outside the page, update ---
+if(window.ethereum){
+  window.ethereum.on && window.ethereum.on('accountsChanged', (accs)=>{
+    if(!accs || !accs.length){ current.wallet = null; route(); }
+    else { current.wallet = accs[0].toLowerCase(); upsertUser(current.wallet); route(); }
+  });
+}
+</script>
+</body>
+</html>
